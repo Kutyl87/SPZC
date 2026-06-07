@@ -20,3 +20,7 @@ def distillation_loss(student_logits, teacher_logits, temperature=2.0, alpha=1.0
         reduction="batchmean",
     ) * (temperature ** 2)
     return alpha * soft_loss
+
+
+def accuracy_from_logits(logits, labels):
+    return (logits.argmax(dim=1) == labels).float().mean().item()
