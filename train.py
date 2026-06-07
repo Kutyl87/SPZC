@@ -5,13 +5,13 @@ import torch
 from torch import optim
 from tqdm import tqdm
 
-from src.data import get_cifar100_loaders
-from src.student import SmallCNN
+from src.data import get_data_loaders
+from src.student import build_student
 from src.teacher import TeacherAPI
-from src.utils import accuracy_from_logits, distillation_loss, set_seed
+from src.utils import accuracy_from_subset_logits, distillation_loss, set_seed
 
 
-def train_one_epoch(student, teacher, loader, optimizer, device, temperature, alpha, report_acc):
+def train_one_epoch(student, teacher, loader, optimizer, device, temperature, alpha, report_acc, class_indices):
     student.train()
     total_loss = 0.0
     total_teacher_match = 0.0
@@ -43,23 +43,23 @@ def train_one_epoch(student, teacher, loader, optimizer, device, temperature, al
             .item()
             * images.size(0)
         )
-        if report_acc:
-            total_student_accuracy += accuracy_from_logits(student_logits, labels) * images.size(0)
-            total_teacher_accuracy += accuracy_from_logits(teacher_logits, labels) * images.size(0)
+        if report_acc and class_indices is not None:
+            total_student_accuracy += accuracy_from_subset_logits(student_logits, labels, class_indices) * images.size(0)
+            total_teacher_accuracy += accuracy_from_subset_logits(teacher_logits, labels, class_indices) * images.size(0)
 
     size = len(loader.dataset)
     metrics = {
         "loss": total_loss / size,
         "teacher_match": total_teacher_match / size,
     }
-    if report_acc:
+    if report_acc and class_indices is not None:
         metrics["student_accuracy"] = total_student_accuracy / size
         metrics["teacher_accuracy"] = total_teacher_accuracy / size
     return metrics
 
 
 @torch.no_grad()
-def evaluate(student, teacher, loader, device, report_acc):
+def evaluate(student, teacher, loader, device, report_acc, class_indices):
     student.eval()
     total_teacher_match = 0.0
     total_student_accuracy = 0.0
@@ -78,15 +78,15 @@ def evaluate(student, teacher, loader, device, report_acc):
             .item()
             * images.size(0)
         )
-        if report_acc:
-            total_student_accuracy += accuracy_from_logits(student_logits, labels) * images.size(0)
-            total_teacher_accuracy += accuracy_from_logits(teacher_logits, labels) * images.size(0)
+        if report_acc and class_indices is not None:
+            total_student_accuracy += accuracy_from_subset_logits(student_logits, labels, class_indices) * images.size(0)
+            total_teacher_accuracy += accuracy_from_subset_logits(teacher_logits, labels, class_indices) * images.size(0)
 
     size = len(loader.dataset)
     metrics = {
         "teacher_match": total_teacher_match / size,
     }
-    if report_acc:
+    if report_acc and class_indices is not None:
         metrics["student_accuracy"] = total_student_accuracy / size
         metrics["teacher_accuracy"] = total_teacher_accuracy / size
     return metrics
@@ -94,13 +94,15 @@ def evaluate(student, teacher, loader, device, report_acc):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train CNN student with ViT teacher.")
-    parser.add_argument("--data-dir", default="data", help="Directory for CIFAR-100.")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--dataset", choices=["cifar100", "imagenette"], default="cifar100")
     parser.add_argument("--output-dir", default="outputs", help="Directory for checkpoints.")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--temperature", type=float, default=2.0)
     parser.add_argument("--alpha", type=float, default=1.0)
+    parser.add_argument("--model", choices=["small_cnn", "resnet18"], default="small_cnn")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--teacher-api-url", default="http://127.0.0.1:8000")
@@ -114,14 +116,21 @@ def main():
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader, test_loader = get_cifar100_loaders(
+    train_loader, test_loader = get_data_loaders(
+        dataset_name=args.dataset,
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
     )
 
     teacher = TeacherAPI(base_url=args.teacher_api_url)
-    student = SmallCNN(num_classes=1000).to(device)
+    teacher_meta = teacher.get_meta()
+    if teacher_meta["dataset_name"] != args.dataset:
+        raise ValueError(
+            f"Dataset mismatch: train.py uses {args.dataset}, teacher_api uses {teacher_meta['dataset_name']}"
+        )
+    class_indices = teacher_meta["subset_indices"]
+    student = build_student(args.model, num_classes=teacher_meta["num_labels"]).to(device)
     optimizer = optim.Adam(student.parameters(), lr=args.lr)
 
     best_match = 0.0
@@ -135,6 +144,7 @@ def main():
             args.temperature,
             args.alpha,
             args.report_accuracies,
+            class_indices,
         )
         eval_metrics = evaluate(
             student,
@@ -142,26 +152,31 @@ def main():
             test_loader,
             device,
             args.report_accuracies,
+            class_indices,
         )
 
         message = (
             f"epoch={epoch} "
+            f"dataset={args.dataset} "
+            f"model={args.model} "
             f"train_loss={train_metrics['loss']:.4f} "
             f"train_teacher_match={train_metrics['teacher_match']:.4f} "
             f"teacher_match={eval_metrics['teacher_match']:.4f}"
         )
-        if args.report_accuracies:
+        if args.report_accuracies and class_indices is not None:
             message += (
                 f" train_teacher_acc={train_metrics['teacher_accuracy']:.4f} "
                 f"train_student_acc={train_metrics['student_accuracy']:.4f} "
                 f"val_teacher_acc={eval_metrics['teacher_accuracy']:.4f} "
                 f"val_student_acc={eval_metrics['student_accuracy']:.4f}"
             )
+        elif args.report_accuracies:
+            message += " label_acc=unsupported_for_dataset"
         print(message)
 
         if eval_metrics["teacher_match"] > best_match:
             best_match = eval_metrics["teacher_match"]
-            torch.save(student.state_dict(), f"{args.output_dir}/best_student.pt")
+            torch.save(student.state_dict(), f"{args.output_dir}/best_{args.dataset}_{args.model}.pt")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 
 
 class CIFAR100WithIds(datasets.CIFAR100):
@@ -9,8 +9,17 @@ class CIFAR100WithIds(datasets.CIFAR100):
 
     def __getitem__(self, index):
         image, label = super().__getitem__(index)
-        sample_id = f"{self.split}:{index}"
-        return image, label, sample_id
+        return image, label, f"{self.split}:{index}"
+
+
+class ImagenetteWithIds(datasets.Imagenette):
+    def __init__(self, split, **kwargs):
+        super().__init__(split=split, **kwargs)
+        self.split = split
+
+    def __getitem__(self, index):
+        image, label = super().__getitem__(index)
+        return image, label, f"{self.split}:{index}"
 
 
 def build_transforms():
@@ -26,21 +35,46 @@ def build_transforms():
     )
 
 
-def get_cifar100_loaders(data_dir, batch_size=64, num_workers=0):
+def build_datasets(dataset_name, data_dir):
     transform = build_transforms()
 
-    train_dataset = CIFAR100WithIds(
-        split="train",
-        root=data_dir,
-        download=True,
-        transform=transform,
-    )
-    test_dataset = CIFAR100WithIds(
-        split="test",
-        root=data_dir,
-        download=True,
-        transform=transform,
-    )
+    if dataset_name == "cifar100":
+        train_dataset = CIFAR100WithIds(
+            split="train",
+            root=data_dir,
+            download=True,
+            transform=transform,
+        )
+        eval_dataset = CIFAR100WithIds(
+            split="test",
+            root=data_dir,
+            download=True,
+            transform=transform,
+        )
+        return train_dataset, eval_dataset
+
+    if dataset_name == "imagenette":
+        train_dataset = ImagenetteWithIds(
+            split="train",
+            root=data_dir,
+            size="160px",
+            download=True,
+            transform=transform,
+        )
+        eval_dataset = ImagenetteWithIds(
+            split="val",
+            root=data_dir,
+            size="160px",
+            download=True,
+            transform=transform,
+        )
+        return train_dataset, eval_dataset
+
+    raise ValueError(f"Unsupported dataset: {dataset_name}")
+
+
+def get_data_loaders(dataset_name, data_dir, batch_size=64, num_workers=0):
+    train_dataset, eval_dataset = build_datasets(dataset_name, data_dir)
 
     train_loader = DataLoader(
         train_dataset,
@@ -48,10 +82,10 @@ def get_cifar100_loaders(data_dir, batch_size=64, num_workers=0):
         shuffle=True,
         num_workers=num_workers,
     )
-    test_loader = DataLoader(
-        test_dataset,
+    eval_loader = DataLoader(
+        eval_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
     )
-    return train_loader, test_loader
+    return train_loader, eval_loader

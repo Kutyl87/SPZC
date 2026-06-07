@@ -1,34 +1,60 @@
 import argparse
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import torch
 from transformers import ViTForImageClassification
+from torchvision.datasets import Imagenette
 
-from src.data import CIFAR100WithIds, build_transforms
+from src.data import build_datasets
+
+
+def normalize_label(text):
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def build_imagenette_indices(id2label, wnids):
+    normalized_labels = {
+        index: normalize_label(label)
+        for index, label in id2label.items()
+    }
+    indices = []
+    for wnid in wnids:
+        aliases = Imagenette._WNID_TO_CLASS[wnid]
+        alias_indices = []
+        for alias in aliases:
+            normalized_alias = normalize_label(alias)
+            for index, label in normalized_labels.items():
+                if normalized_alias in label:
+                    alias_indices.append(index)
+        if not alias_indices:
+            raise ValueError(f"Could not map wnid {wnid} to ImageNet class")
+        indices.append(min(alias_indices))
+    return indices
 
 
 class TeacherService:
-    def __init__(self, data_dir, model_name, device):
-        transform = build_transforms()
+    def __init__(self, data_dir, model_name, dataset_name, device):
+        train_dataset, eval_dataset = build_datasets(dataset_name, data_dir)
         self.datasets = {
-            "train": CIFAR100WithIds(
-                split="train",
-                root=data_dir,
-                download=True,
-                transform=transform,
-            ),
-            "test": CIFAR100WithIds(
-                split="test",
-                root=data_dir,
-                download=True,
-                transform=transform,
-            ),
+            train_dataset.split: train_dataset,
+            eval_dataset.split: eval_dataset,
         }
         self.model = ViTForImageClassification.from_pretrained(model_name).to(device)
         self.model.eval()
         self.device = device
         self.cache = {}
+        self.meta = {
+            "dataset_name": dataset_name,
+            "num_labels": self.model.config.num_labels,
+            "subset_indices": None,
+        }
+        if dataset_name == "imagenette":
+            self.meta["subset_indices"] = build_imagenette_indices(
+                self.model.config.id2label,
+                train_dataset.wnids,
+            )
 
     def predict(self, sample_ids):
         missing = [sample_id for sample_id in sample_ids if sample_id not in self.cache]
@@ -48,6 +74,18 @@ class TeacherService:
 
 def create_handler(service):
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/meta":
+                self.send_error(404)
+                return
+
+            body = json.dumps(service.meta).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self):
             if self.path != "/predict":
                 self.send_error(404)
@@ -77,6 +115,7 @@ def parse_args():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--model-name", default="google/vit-base-patch16-224")
+    parser.add_argument("--dataset", choices=["cifar100", "imagenette"], default="cifar100")
     return parser.parse_args()
 
 
@@ -86,6 +125,7 @@ def main():
     service = TeacherService(
         data_dir=args.data_dir,
         model_name=args.model_name,
+        dataset_name=args.dataset,
         device=device,
     )
     server = ThreadingHTTPServer((args.host, args.port), create_handler(service))

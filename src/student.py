@@ -1,4 +1,5 @@
 from torch import nn
+from torchvision.models import resnet18
 
 
 class SmallCNN(nn.Module):
@@ -29,3 +30,13 @@ class SmallCNN(nn.Module):
     def forward(self, x):
         x = self.features(x)
         return self.classifier(x)
+
+
+def build_student(model_name, num_classes=1000):
+    if model_name == "small_cnn":
+        return SmallCNN(num_classes=num_classes)
+    if model_name == "resnet18":
+        model = resnet18(weights=None)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+        return model
+    raise ValueError(f"Unsupported model: {model_name}")

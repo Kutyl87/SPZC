@@ -24,3 +24,8 @@ def distillation_loss(student_logits, teacher_logits, temperature=2.0, alpha=1.0
 
 def accuracy_from_logits(logits, labels):
     return (logits.argmax(dim=1) == labels).float().mean().item()
+
+
+def accuracy_from_subset_logits(logits, labels, class_indices):
+    subset_logits = logits[:, class_indices]
+    return (subset_logits.argmax(dim=1) == labels).float().mean().item()
