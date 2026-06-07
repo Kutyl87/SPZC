@@ -1,0 +1,7 @@
+torch
+torchvision
+transformers
+Pillow
+requests
+tqdm
+numpy<2
