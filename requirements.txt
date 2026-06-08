@@ -5,3 +5,4 @@ Pillow
 requests
 tqdm
 numpy<2
+matplotlib

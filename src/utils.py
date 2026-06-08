@@ -22,6 +22,11 @@ def distillation_loss(student_logits, teacher_logits, temperature=2.0, alpha=1.0
     return alpha * soft_loss
 
 
+def hard_label_loss(student_logits, teacher_logits):
+    teacher_hard_labels = teacher_logits.argmax(dim=1)
+    loss = F.cross_entropy(student_logits, teacher_hard_labels)
+    return loss
+
 def accuracy_from_logits(logits, labels):
     return (logits.argmax(dim=1) == labels).float().mean().item()
 
